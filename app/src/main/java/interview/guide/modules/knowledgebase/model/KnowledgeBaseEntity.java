@@ -73,6 +73,36 @@ public class KnowledgeBaseEntity {
     // 向量分块数量
     private Integer chunkCount = 0;
 
+    /**
+     * 本次向量化使用的 Chunk 策略快照（无密钥 JSON）；null 表示旧版默认 800。
+     */
+    @Column(name = "vector_config")
+    private String vectorConfig;
+
+    /**
+     * 最近一次向量化完成时间。
+     */
+    @Column(name = "vectorized_at")
+    private LocalDateTime vectorizedAt;
+
+    /**
+     * 最后一次有效进展时间（状态变化与心跳都推进），用于卡住任务恢复判定。
+     */
+    @Column(name = "vector_updated_at")
+    private LocalDateTime vectorUpdatedAt;
+
+    /**
+     * 恢复调度器自动补投次数（手动重试清零），与 Stream retryCount 独立。
+     */
+    @Column(name = "vector_recovery_count", nullable = false)
+    private int vectorRecoveryCount = 0;
+
+    /**
+     * 当前 PROCESSING 执行代次；条件心跳和终态写入必须同时匹配该值。
+     */
+    @Column(name = "vector_attempt_id", length = 36)
+    private String vectorAttemptId;
+
     // 问题生成状态
     @Enumerated(EnumType.STRING)
     @Column(length = 20)
@@ -244,6 +274,46 @@ public class KnowledgeBaseEntity {
 
     public void setChunkCount(Integer chunkCount) {
         this.chunkCount = chunkCount;
+    }
+
+    public String getVectorConfig() {
+        return vectorConfig;
+    }
+
+    public void setVectorConfig(String vectorConfig) {
+        this.vectorConfig = vectorConfig;
+    }
+
+    public LocalDateTime getVectorizedAt() {
+        return vectorizedAt;
+    }
+
+    public LocalDateTime getVectorUpdatedAt() {
+        return vectorUpdatedAt;
+    }
+
+    public void setVectorUpdatedAt(LocalDateTime vectorUpdatedAt) {
+        this.vectorUpdatedAt = vectorUpdatedAt;
+    }
+
+    public int getVectorRecoveryCount() {
+        return vectorRecoveryCount;
+    }
+
+    public void setVectorRecoveryCount(int vectorRecoveryCount) {
+        this.vectorRecoveryCount = vectorRecoveryCount;
+    }
+
+    public String getVectorAttemptId() {
+        return vectorAttemptId;
+    }
+
+    public void setVectorAttemptId(String vectorAttemptId) {
+        this.vectorAttemptId = vectorAttemptId;
+    }
+
+    public void setVectorizedAt(LocalDateTime vectorizedAt) {
+        this.vectorizedAt = vectorizedAt;
     }
 
     public QuestionGenStatus getQuestionGenStatus() {

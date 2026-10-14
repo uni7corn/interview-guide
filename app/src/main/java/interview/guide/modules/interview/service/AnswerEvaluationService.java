@@ -5,6 +5,7 @@ import interview.guide.common.evaluation.QaRecord;
 import interview.guide.common.evaluation.UnifiedEvaluationService;
 import interview.guide.common.exception.BusinessException;
 import interview.guide.common.exception.ErrorCode;
+import interview.guide.common.log.ErrorLogSanitizer;
 import interview.guide.modules.interview.model.InterviewQuestionDTO;
 import interview.guide.modules.interview.model.InterviewReportDTO;
 import interview.guide.modules.interview.model.InterviewReportDTO.CategoryScore;
@@ -49,7 +50,8 @@ public class AnswerEvaluationService {
         try {
             // 转为通用问答记录
             List<QaRecord> qaRecords = questions.stream()
-                .map(q -> new QaRecord(q.questionIndex(), q.question(), q.category(), q.userAnswer()))
+                .map(q -> new QaRecord(q.questionIndex(), q.question(), q.category(), q.userAnswer(),
+                    q.isFollowUp(), q.parentQuestionIndex()))
                 .toList();
 
             String referenceContext = buildQuestionReferenceContext(questions);
@@ -71,9 +73,10 @@ public class AnswerEvaluationService {
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
-            log.error("面试评估失败: {}", e.getMessage(), e);
+            log.error("面试评估失败: {}", ErrorLogSanitizer.summarize(e),
+                ErrorLogSanitizer.forLogging(e));
             throw new BusinessException(ErrorCode.INTERVIEW_EVALUATION_FAILED,
-                "面试评估失败：" + e.getMessage());
+                "面试评估失败");
         }
     }
 

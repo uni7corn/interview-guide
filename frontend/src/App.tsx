@@ -2,7 +2,6 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useOu
 import Layout from './components/Layout';
 import { useEffect, useState, Suspense, lazy } from 'react';
 import { historyApi, type InterviewDetail } from './api/history';
-import type { UploadKnowledgeBaseResponse } from './api/knowledgebase';
 import type { Difficulty } from './components/UnifiedInterviewModal';
 import type { CategoryDTO } from './api/skill';
 import { Loader2 } from 'lucide-react';
@@ -38,12 +37,7 @@ const Loading = () => (
 function UploadPageWrapper() {
   const navigate = useNavigate();
 
-  const handleUploadComplete = (resumeId: number) => {
-    // 异步模式：上传成功后跳转到简历库，让用户在列表中查看分析状态
-    navigate('/history', { state: { newResumeId: resumeId } });
-  };
-
-  return <UploadPage onUploadComplete={handleUploadComplete} />;
+  return <UploadPage onBack={() => navigate(ROUTES.resumeHistory)} />;
 }
 
 // 历史记录列表包装器
@@ -426,16 +420,11 @@ function KnowledgeBaseQueryPageWrapper() {
 function KnowledgeBaseUploadPageWrapper() {
   const navigate = useNavigate();
 
-  const handleUploadComplete = (_result: UploadKnowledgeBaseResponse) => {
-    // 上传完成后返回管理页面
-    navigate('/knowledgebase');
-  };
-
   const handleBack = () => {
     navigate('/knowledgebase');
   };
 
-  return <KnowledgeBaseUploadPage onUploadComplete={handleUploadComplete} onBack={handleBack} />;
+  return <KnowledgeBaseUploadPage onBack={handleBack} />;
 }
 
 // 语音面试页面包装器

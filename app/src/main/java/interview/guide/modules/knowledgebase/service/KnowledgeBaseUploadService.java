@@ -5,6 +5,7 @@ import interview.guide.common.exception.ErrorCode;
 import interview.guide.infrastructure.file.FileHashService;
 import interview.guide.infrastructure.file.FileStorageService;
 import interview.guide.infrastructure.file.FileValidationService;
+import interview.guide.infrastructure.file.KnowledgeBaseUploadLimiter;
 import interview.guide.modules.knowledgebase.listener.VectorizeStreamProducer;
 import interview.guide.modules.knowledgebase.model.KnowledgeBaseEntity;
 import interview.guide.modules.knowledgebase.model.VectorStatus;
@@ -34,6 +35,7 @@ public class KnowledgeBaseUploadService {
     private final FileValidationService fileValidationService;
     private final FileHashService fileHashService;
     private final VectorizeStreamProducer vectorizeStreamProducer;
+    private final KnowledgeBaseUploadLimiter uploadLimiter;
 
     private static final long MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
     
@@ -46,6 +48,11 @@ public class KnowledgeBaseUploadService {
      * @return 上传结果和存储信息（包含duplicate字段，表示是否为重复上传）
      */
     public Map<String, Object> uploadKnowledgeBase(MultipartFile file, String name, String category) {
+        return uploadLimiter.execute(() -> doUploadKnowledgeBase(file, name, category));
+    }
+
+    private Map<String, Object> doUploadKnowledgeBase(
+        MultipartFile file, String name, String category) {
         // 1. 验证文件
         fileValidationService.validateFile(file, MAX_FILE_SIZE, "知识库");
 
@@ -64,41 +71,57 @@ public class KnowledgeBaseUploadService {
             return persistenceService.handleDuplicateKnowledgeBase(existingKb.get(), fileHash);
         }
 
-        // 4. 解析知识库文本（用于向量化）
-        String content = parseService.parseContent(file);
-        if (content == null || content.trim().isEmpty()) {
-            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "无法从文件中提取文本内容，请确保文件格式正确");
-        }
-
-        // 5. 保存文件到RustFS
+        // 4. 保存文件到RustFS
         String fileKey = storageService.uploadKnowledgeBase(file);
         String fileUrl = storageService.getFileUrl(fileKey);
         log.info("知识库已存储到RustFS: {}", fileKey);
 
-        // 6. 保存知识库元数据到数据库（状态为 PENDING）
-        KnowledgeBaseEntity savedKb = persistenceService.saveKnowledgeBase(file, name, category, fileKey, fileUrl, fileHash);
+        // 5. 保存知识库元数据到数据库（状态为 PENDING）；失败时补偿删除孤儿对象（按 fileKey，不删实体——此时还没有实体）
+        KnowledgeBaseEntity savedKb;
+        try {
+            savedKb = persistenceService.saveKnowledgeBase(file, name, category, fileKey, fileUrl, fileHash);
+        } catch (Exception dbError) {
+            compensateOrphanObject(fileKey, dbError);
+            throw dbError;
+        }
 
-        // 7. 发送向量化任务到 Redis Stream（异步处理）
-        vectorizeStreamProducer.sendVectorizeTask(savedKb.getId(), content);
+        // 6. 发送向量化任务到 Redis Stream（异步处理，正文由消费者从 RustFS 下载解析）。
+        //    投递失败时文件与实体已保存（是手动重试与自动恢复的依据），只返回真实 FAILED 状态
+        boolean enqueueAccepted = vectorizeStreamProducer.sendVectorizeTask(savedKb.getId());
 
-        log.info("知识库上传完成，向量化任务已入队: {}, kbId={}", fileName, savedKb.getId());
+        log.info("知识库上传完成: {}, kbId={}, enqueueAccepted={}", fileName, savedKb.getId(), enqueueAccepted);
 
-        // 8. 返回结果（状态为 PENDING，前端可轮询获取最新状态）
+        // 7. 返回结果：状态与数据库真实状态一致，投递失败不伪装成 PENDING
         return Map.of(
             "knowledgeBase", Map.of(
                 "id", savedKb.getId(),
                 "name", savedKb.getName(),
                 "category", savedKb.getCategory() != null ? savedKb.getCategory() : "",
                 "fileSize", savedKb.getFileSize(),
-                "contentLength", content.length(),
-                "vectorStatus", VectorStatus.PENDING.name()
+                "vectorStatus", enqueueAccepted ? VectorStatus.PENDING.name() : VectorStatus.FAILED.name()
             ),
             "storage", Map.of(
                 "fileKey", fileKey,
                 "fileUrl", fileUrl
             ),
+            "enqueueAccepted", enqueueAccepted,
+            "message", enqueueAccepted ? "" : "文件已保存，但任务投递失败，可在管理页重试",
             "duplicate", false
         );
+    }
+
+    /**
+     * S3 已成功、数据库保存失败的补偿：按 fileKey 删除孤儿对象。
+     * 补偿失败只记录，不覆盖原始业务异常。
+     */
+    private void compensateOrphanObject(String fileKey, Exception originalError) {
+        try {
+            storageService.deleteKnowledgeBase(fileKey);
+            log.warn("数据库保存失败已补偿删除孤儿对象: fileKey={}", fileKey);
+        } catch (Exception cleanupError) {
+            log.error("补偿删除孤儿对象失败，需人工清理: fileKey={}, error={}",
+                fileKey, cleanupError.getMessage(), cleanupError);
+        }
     }
 
     /**
@@ -116,7 +139,7 @@ public class KnowledgeBaseUploadService {
     
     /**
      * 重新向量化知识库（手动重试）
-     * 从 RustFS 重新下载文件并发送向量化任务
+     * 只投递知识库 ID，正文由消费者从 RustFS 下载解析
      *
      * @param kbId 知识库ID
      */
@@ -124,19 +147,21 @@ public class KnowledgeBaseUploadService {
         KnowledgeBaseEntity kb = knowledgeBaseRepository.findById(kbId)
             .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "知识库不存在"));
 
-        log.info("开始重新向量化知识库: kbId={}, name={}", kbId, kb.getName());
-
-        // 1. 下载文件并解析内容
-        String content = parseService.downloadAndParseContent(kb.getStorageKey(), kb.getOriginalFilename());
-        if (content == null || content.trim().isEmpty()) {
-            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "无法从文件中提取文本内容");
+        if (kb.getStorageKey() == null || kb.getStorageKey().trim().isEmpty()
+            || kb.getOriginalFilename() == null || kb.getOriginalFilename().trim().isEmpty()) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "知识库缺少存储信息，无法重新向量化");
         }
 
-        // 2. 更新状态为 PENDING（通过单独的 Service 保证事务生效）
-        persistenceService.updateVectorStatusToPending(kbId);
+        log.info("开始重新向量化知识库: kbId={}", kbId);
 
-        // 3. 发送向量化任务到 Stream
-        vectorizeStreamProducer.sendVectorizeTask(kbId, content);
+        // 1. 更新状态为 PENDING 并清零自动恢复计数（手动重试重新获得完整恢复额度）
+        persistenceService.updateVectorStatusToPending(kbId);
+        knowledgeBaseRepository.resetVectorRecoveryCount(kbId);
+
+        // 2. 发送向量化任务到 Stream；投递失败必须让调用方感知，不能只写日志
+        if (!vectorizeStreamProducer.sendVectorizeTask(kbId)) {
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "任务投递失败，请稍后重试");
+        }
 
         log.info("重新向量化任务已发送: kbId={}", kbId);
     }

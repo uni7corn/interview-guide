@@ -60,6 +60,24 @@ public class ResumeEntity {
     @Column(length = 20)
     private AsyncTaskStatus analyzeStatus = AsyncTaskStatus.PENDING;
 
+    /**
+     * 最后一次有效进展时间（状态变化与心跳都推进），用于卡住任务恢复判定。
+     */
+    @jakarta.persistence.Column(name = "analyze_updated_at")
+    private java.time.LocalDateTime analyzeUpdatedAt;
+
+    /**
+     * 恢复调度器自动补投次数（手动重试清零），与 Stream retryCount 独立。
+     */
+    @jakarta.persistence.Column(name = "analyze_recovery_count", nullable = false)
+    private int analyzeRecoveryCount = 0;
+
+    /**
+     * 当前 PROCESSING 执行代次；条件心跳和终态写入必须同时匹配该值。
+     */
+    @Column(name = "analyze_attempt_id", length = 36)
+    private String analyzeAttemptId;
+
     // 分析错误信息（失败时记录）
     @Column(length = 500)
     private String analyzeError;
@@ -167,6 +185,30 @@ public class ResumeEntity {
 
     public AsyncTaskStatus getAnalyzeStatus() {
         return analyzeStatus;
+    }
+
+    public java.time.LocalDateTime getAnalyzeUpdatedAt() {
+        return analyzeUpdatedAt;
+    }
+
+    public void setAnalyzeUpdatedAt(java.time.LocalDateTime analyzeUpdatedAt) {
+        this.analyzeUpdatedAt = analyzeUpdatedAt;
+    }
+
+    public int getAnalyzeRecoveryCount() {
+        return analyzeRecoveryCount;
+    }
+
+    public void setAnalyzeRecoveryCount(int analyzeRecoveryCount) {
+        this.analyzeRecoveryCount = analyzeRecoveryCount;
+    }
+
+    public String getAnalyzeAttemptId() {
+        return analyzeAttemptId;
+    }
+
+    public void setAnalyzeAttemptId(String analyzeAttemptId) {
+        this.analyzeAttemptId = analyzeAttemptId;
     }
 
     public void setAnalyzeStatus(AsyncTaskStatus analyzeStatus) {

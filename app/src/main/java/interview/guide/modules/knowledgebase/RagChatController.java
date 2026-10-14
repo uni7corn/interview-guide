@@ -117,8 +117,8 @@ public class RagChatController {
             @PathVariable Long sessionId,
             @Valid @RequestBody SendMessageRequest request) {
 
-        log.info("收到 RAG 聊天流式请求: sessionId={}, question={}, 线程: {} (虚拟线程: {})",
-            sessionId, request.question(), Thread.currentThread(), Thread.currentThread().isVirtual());
+        log.info("收到 RAG 聊天流式请求: sessionId={}, questionLength={}, 线程: {} (虚拟线程: {})",
+            sessionId, request.question().length(), Thread.currentThread(), Thread.currentThread().isVirtual());
 
         // 1. 准备消息（保存用户消息，创建 AI 消息占位）
         Long messageId = sessionService.prepareStreamMessage(sessionId, request.question());
@@ -136,6 +136,14 @@ public class RagChatController {
                 // 3. 流式完成后更新消息内容
                 sessionService.completeStreamMessage(messageId, fullContent.toString());
                 log.info("RAG 聊天流式完成: sessionId={}, messageId={}", sessionId, messageId);
+            })
+            .doOnCancel(() -> {
+                // 客户端中断时保存已生成的部分内容，并结束 AI 消息占位
+                String content = !fullContent.isEmpty()
+                    ? fullContent.toString()
+                    : "【已中断】回答生成已取消";
+                sessionService.completeStreamMessage(messageId, content);
+                log.info("RAG 聊天流式取消: sessionId={}, messageId={}", sessionId, messageId);
             })
             .doOnError(e -> {
                 // 错误时也保存已接收的内容
